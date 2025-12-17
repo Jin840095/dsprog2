@@ -50,12 +50,26 @@ def main(page: ft.Page):
         """天気予報カードを作成"""
         icon = get_weather_icon(weather)
         
+        # 天気テキストを短縮（改行を削除し、長い場合は省略）
+        weather_short = weather.replace("\n", " ").replace("　", " ")
+        if len(weather_short) > 20:
+            weather_short = weather_short[:18] + "..."
+        
         return ft.Container(
             content=ft.Column(
                 controls=[
                     ft.Text(date, size=14, weight=ft.FontWeight.BOLD),
                     ft.Text(icon, size=40),
-                    ft.Text(weather, size=12, text_align=ft.TextAlign.CENTER),
+                    ft.Container(
+                        content=ft.Text(
+                            weather_short, 
+                            size=11, 
+                            text_align=ft.TextAlign.CENTER,
+                        ),
+                        width=120,
+                        height=40,
+                        alignment=ft.alignment.center,
+                    ),
                     ft.Row(
                         controls=[
                             ft.Text(
@@ -76,8 +90,8 @@ def main(page: ft.Page):
                 horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                 spacing=5,
             ),
-            width=140,
-            height=160,
+            width=150,
+            height=180,
             padding=10,
             border_radius=10,
             bgcolor=ft.Colors.WHITE,
@@ -104,11 +118,10 @@ def main(page: ft.Page):
             page.update()
             return
 
-        weather_cards = []
+        weather_dict = {}  # 日付をキーにしてデータを集約
         
         # 天気予報データを解析
         if forecast_data and len(forecast_data) > 0:
-            # 週間天気予報（forecast_data[1]）を優先
             for forecast_item in forecast_data:
                 time_series = forecast_item.get("timeSeries", [])
                 
@@ -116,47 +129,72 @@ def main(page: ft.Page):
                     time_defines = ts.get("timeDefines", [])
                     areas = ts.get("areas", [])
                     
-                    if areas:
-                        area = areas[0]
-                        weathers = area.get("weathers", [])
-                        temps = area.get("temps", [])
-                        temps_min = area.get("tempsMin", [])
-                        temps_max = area.get("tempsMax", [])
-                        
-                        # 天気情報がある場合
-                        if weathers:
-                            for i, time_def in enumerate(time_defines):
-                                date_str = time_def[:10]  # YYYY-MM-DD形式
-                                weather = weathers[i] if i < len(weathers) else "-"
+                    if not areas:
+                        continue
+                    
+                    area = areas[0]
+                    
+                    # 天気情報の取得
+                    weathers = area.get("weathers", [])
+                    if weathers:
+                        for i, time_def in enumerate(time_defines):
+                            date_str = time_def[:10]
+                            if date_str not in weather_dict:
+                                weather_dict[date_str] = {"weather": None, "temp_min": None, "temp_max": None}
+                            if i < len(weathers):
+                                weather_dict[date_str]["weather"] = weathers[i]
+                    
+                    # 気温情報の取得（temps配列 - 短期予報用）
+                    temps = area.get("temps", [])
+                    if temps and len(time_defines) > 0:
+                        # 短期予報のtempsは時刻ごとの気温
+                        # timeDefinesと対応させて、日付ごとに最低・最高を判定
+                        for i, time_def in enumerate(time_defines):
+                            if i >= len(temps) or not temps[i]:
+                                continue
+                            date_str = time_def[:10]
+                            if date_str not in weather_dict:
+                                weather_dict[date_str] = {"weather": None, "temp_min": None, "temp_max": None}
+                            
+                            temp_val = int(temps[i]) if temps[i] else None
+                            if temp_val is not None:
+                                current_min = weather_dict[date_str]["temp_min"]
+                                current_max = weather_dict[date_str]["temp_max"]
                                 
-                                # 気温の取得
-                                temp_min = None
-                                temp_max = None
-                                
-                                if temps_min and i < len(temps_min):
-                                    temp_min = temps_min[i] if temps_min[i] else None
-                                if temps_max and i < len(temps_max):
-                                    temp_max = temps_max[i] if temps_max[i] else None
-                                
-                                # tempsがある場合（短期予報）
-                                if temps and not temp_min and not temp_max:
-                                    if i * 2 < len(temps):
-                                        temp_min = temps[i * 2] if temps[i * 2] else None
-                                    if i * 2 + 1 < len(temps):
-                                        temp_max = temps[i * 2 + 1] if temps[i * 2 + 1] else None
-                                
-                                # 重複チェック
-                                if not any(
-                                    card.content.controls[0].value == date_str 
-                                    for card in weather_cards 
-                                    if isinstance(card.content, ft.Column) and card.content.controls
-                                ):
-                                    weather_cards.append(
-                                        create_weather_card(date_str, weather, temp_min, temp_max)
-                                    )
+                                # 最低気温の更新
+                                if current_min is None or temp_val < int(current_min):
+                                    weather_dict[date_str]["temp_min"] = temps[i]
+                                # 最高気温の更新
+                                if current_max is None or temp_val > int(current_max):
+                                    weather_dict[date_str]["temp_max"] = temps[i]
+                    
+                    # tempsMin/tempsMax（週間予報用）
+                    temps_min = area.get("tempsMin", [])
+                    temps_max = area.get("tempsMax", [])
+                    
+                    if temps_min or temps_max:
+                        for i, time_def in enumerate(time_defines):
+                            date_str = time_def[:10]
+                            if date_str not in weather_dict:
+                                weather_dict[date_str] = {"weather": None, "temp_min": None, "temp_max": None}
+                            if temps_min and i < len(temps_min) and temps_min[i]:
+                                weather_dict[date_str]["temp_min"] = temps_min[i]
+                            if temps_max and i < len(temps_max) and temps_max[i]:
+                                weather_dict[date_str]["temp_max"] = temps_max[i]
 
-        # 日付でソートして最初の7日分を表示
-        weather_cards = weather_cards[:7]
+        # カードを作成
+        weather_cards = []
+        for date_str in sorted(weather_dict.keys())[:7]:
+            data = weather_dict[date_str]
+            if data["weather"]:
+                weather_cards.append(
+                    create_weather_card(
+                        date_str,
+                        data["weather"],
+                        data["temp_min"],
+                        data["temp_max"]
+                    )
+                )
 
         weather_content.controls = [
             ft.Container(
